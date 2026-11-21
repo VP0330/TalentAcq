@@ -66,6 +66,8 @@ What happens:
 4. One reviewer per resume writes an assessment, several at a time.
 5. A script builds the summary, and the plugin reports the counts.
 
+When running Claude Code non-interactively (headless), include in your request that you have reviewed and confirm the requirements list, because the run otherwise stops at the confirmation step.
+
 **Re-runs:** running the command again only assesses new resumes (and retries manual-review ones), reusing the confirmed requirements. To change the requirements, edit `_requirements.md` and re-run with `--fresh`, so every resume is judged against the same list:
 
 ```
@@ -156,7 +158,7 @@ Resume content is sent to Claude as part of your Claude Code session, the same a
 | Assessments under "Failed automatic checks" | Re-run with `--fresh`. |
 | Requirements need changing | Edit `assessments/_requirements.md`, then re-run with `--fresh`. |
 
-Hook identity: (to be filled after end-to-end test)
+**Hook identity:** on Claude Code 2.1.329 the safety guard recognises reviewer subagents by the identity Claude Code passes to hooks (`resume-screener:resume-reviewer`). If a different Claude Code version does not pass it, the guard falls back to limiting all file reads and writes in the project while a screening run is in progress, and lifts that when the run ends.
 
 ## 10. For maintainers
 

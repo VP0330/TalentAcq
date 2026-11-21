@@ -13,7 +13,7 @@ Count only rows whose Type is `must`.
 Also:
 
 - Nice-to-haves never lower a label. A nice-to-have that is Shown belongs under Strengths.
-- If the requirements list has one must-have or none, apply the rules literally. With no must-haves, every must-have is (trivially) Shown, so the label is Strong match.
+- If the requirements list has one must-have or none, apply the rules literally. With no must-haves, every must-have is (trivially) Shown, so the label is Strong match. Show the header line literally as `Requirements met: 0/0 must-haves shown` (never "N/A").
 - The line `Requirements met: X/Y must-haves shown` counts only `Shown` must-haves in X (not `Partly shown`). Y is the number of must-have rows.
 - Get the table right first, then read the label off these rules. Never adjust a status to reach a label.
 

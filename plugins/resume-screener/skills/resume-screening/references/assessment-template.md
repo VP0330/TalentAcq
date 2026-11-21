@@ -107,6 +107,8 @@ Sales representative from 2017 to 2024. The resume lists Salesforce among its sk
 
 ## Manual-review stub
 
+**Not for reviewers — written only by the screen command. Never use this layout.**
+
 Written only by the screen command, for files it could not read (a scanned PDF with no text layer, a file whose text could not be extracted, or a file name starting with an underscore). A reviewer never writes this: a resume that came with text always gets the full assessment, and the automatic check blocks a stub for it.
 
 ```markdown
