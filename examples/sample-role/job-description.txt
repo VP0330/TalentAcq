@@ -1,22 +1,36 @@
-Senior Account Executive
-Northwind Cloudworks (fictional B2B SaaS company)
-Location: Remote (US time zones)
+AI Product Engineer
+San Francisco, California
+AI Engineering
+In office
+Full-time
+Samba connects the advertising industry. Today, a trillion dollars of media flows through platforms that don’t talk to each other, and each one measures its own results. We built the independent alternative: consented first-party data and AI that give the world’s biggest advertisers, publishers, and platforms one clear view across all of it.
 
-About the role
-Northwind Cloudworks sells a workflow automation platform to mid-market and
-enterprise customers. As a Senior Account Executive you will own the full sales
-cycle, from first conversation to signed contract, and help coach newer reps.
+The next era of advertising will run on AI agents, and those agents will need data they can trust. We’re building that foundation, and the agents that act on it. Join us and help build what the industry runs on.
 
-Requirements
-- 5+ years of B2B SaaS sales
-- Experience with Salesforce CRM
-- Closed individual deals over $100k
-- Managed a sales team
+About the Role
+You build AI agents that internal teams across Samba actually use, on the AI Engineering team. That means sitting with a non-technical team, finding where their work is slow, and shipping an agent with the tools and harness it needs to help, on the desktop or in the cloud. You own it from idea to measurable impact.
 
-Nice to have
-- Experience selling to healthcare customers
-- Spanish language skills
+What You'll Do
+Ship Agents: Build and deploy AI agents using modern agent SDKs such as Claude or OpenAI, with custom tools and function calling.
+Build the Harness: Design tool harnesses and execution environments for agents, both on the desktop through local CLI and IDE integrations, and in the cloud as containerized, API-driven services.
+Embed With Teams: Partner with internal teams to understand their workflows, identify automation opportunities, and build agents tailored to their use cases.
+Reason About Models: Think critically about LLM capabilities and limitations, understanding the differences between models, when to use which, and how to get the best results from each.
+Engineer the Context: Develop context engineering strategies that give LLMs the right information at the right time, within token limits.
+Maintain Tool Libraries: Build and maintain custom tool libraries that agents use to interact with internal systems, APIs, and data sources.
+Run Agents in Production: Deploy and manage agents in cloud environments with monitoring, error handling, and cost controls, optimizing spend and performance through prompt engineering, caching, and model selection.
 
-What we offer
-Competitive base plus uncapped commission, flexible remote work, and a
-supportive team that values curiosity and clear communication.
+What You Bring
+You have built AI agents and shipped them to production, not just prototypes, including the tools, harnesses, and scaffolding they run on, and deployed them in cloud environments.
+You use Claude Code and Cursor daily and are deeply comfortable with AI-assisted development, including headless mode, multi-file editing, and MCP server integration.
+You think critically about LLMs and understand how they work under the hood, reasoning about the differences between Claude, GPT, Gemini, and open-source models to pick the right one.
+You have strong product sense, focus on what users actually need, ship pragmatic 80% solutions and iterate, and take ownership from idea to measurable impact.
+You can sit with a non-technical team, translate their pain points into an agent that helps, explain complex AI systems to anyone in the company, and stay current as the landscape shifts.
+You are comfortable working across cloud platforms (GCP, AWS, Azure) and containerized environments.
+A plus: advanced agent patterns or multi-agent systems, building and configuring Model Context Protocol (MCP) servers, open-source AI/ML contributions, LLM observability tools, and media, adtech, or streaming data knowledge.
+
+Compensation
+$200,000 - $250,000 a year (OTE)
+
+Samba expects to offer on-target earnings (OTE) of $200,000 to $250,000 per year for roles to be performed in California; OTE comprises base salary plus target variable compensation, and actual earnings will depend on various factors, including but not limited to, location, experience, performance, and attainment against targets. OTE is one component of Samba's total compensation package for employees. Other rewards may include long-term incentives. In addition, Samba provides health insurance, wellness offerings, life and disability insurance, a retirement savings plan, paid holidays and paid time off (PTO), and other employee benefits.
+
+Samba is an equal opportunity employer.
