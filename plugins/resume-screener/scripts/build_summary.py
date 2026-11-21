@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from assessment import parse_assessment, validate  # noqa: E402
+from assessment import load_requirements, parse_assessment, validate  # noqa: E402
 from common import (  # noqa: E402
     FIT_LABELS,
     STATUSES,
@@ -45,6 +45,16 @@ def _load_json(path: Path):
     return data if isinstance(data, dict) else None
 
 
+FAILED_DIR = ".failed"
+
+
+def quarantine(md_path: Path) -> None:
+    """Move a failing assessment to ``<assessments>/.failed/`` (replacing an older copy)."""
+    dest_dir = md_path.parent / FAILED_DIR
+    dest_dir.mkdir(exist_ok=True)
+    md_path.replace(dest_dir / md_path.name)
+
+
 def build_summary(assessments_dir: Path, today: date) -> tuple[str, dict]:
     assessments_dir = Path(assessments_dir)
     warnings = []
@@ -56,6 +66,12 @@ def build_summary(assessments_dir: Path, today: date) -> tuple[str, dict]:
     if scan is None:
         scan = {}
         warnings.append("⚠ Injection scan results missing or unreadable — flag checks could not run.")
+    requirements = load_requirements(assessments_dir)
+    if requirements is None:
+        warnings.append(
+            "⚠ _requirements.md missing or has no numbered requirements — tables were not "
+            "checked against it."
+        )
     files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
     jd_name = _clean(str(manifest.get("jd") or "unknown JD"), 120)
 
@@ -79,9 +95,10 @@ def build_summary(assessments_dir: Path, today: date) -> tuple[str, dict]:
             tp = text_path_for(assessments_dir, name)
             resume_text = tp.read_text(encoding="utf-8", errors="replace") if tp.is_file() else None
             scan_entry = scan.get(name) if isinstance(scan.get(name), dict) else None
-            errors = validate(md, resume_text, scan_entry)
+            errors = validate(md, resume_text, scan_entry, requirements)
             if errors:
                 failed[name] = _clean(errors[0], 200)
+                quarantine(md_path)
                 continue
             shown = sum(1 for r in a.rows if r.type == "must" and r.status == STATUSES[0])
             total = sum(1 for r in a.rows if r.type == "must")
@@ -94,6 +111,10 @@ def build_summary(assessments_dir: Path, today: date) -> tuple[str, dict]:
             key = (FIT_LABELS.index(a.fit_label), -shown, name.lower())
         except Exception as exc:  # one bad file must not abort the run
             failed[name] = _clean(f"could not process assessment: {type(exc).__name__}: {exc}", 200)
+            try:
+                quarantine(md_path)
+            except OSError:
+                pass
             continue
         if a.ai_augmented:
             ai_count += 1
@@ -129,7 +150,11 @@ def build_summary(assessments_dir: Path, today: date) -> tuple[str, dict]:
     else:
         lines.append("None.")
     if failed:
-        lines += ["", "## Failed automatic checks", ""]
+        lines += [
+            "", "## Failed automatic checks", "",
+            f"These assessments failed the automatic checks and were moved to "
+            f"`assessments/{FAILED_DIR}/` (not used in the table above).", "",
+        ]
         lines += [f"- {_clean(n, 120)} — {e}" for n, e in sorted(failed.items(), key=lambda kv: kv[0].lower())]
     lines.append("")
 

@@ -151,6 +151,7 @@ class BuildSummaryTests(unittest.TestCase):
 
     def test_missing_manifest_and_scan_warn(self):
         self.add("a.pdf", make_md("Strong match", rows_for(1, 1)))
+        (self.dir / "_requirements.md").write_text("1. [must] Req 1\n", encoding="utf-8")
         md, counts = build_summary(self.dir, TODAY)
         self.assertIn("Extraction manifest missing or unreadable", md.splitlines()[0])
         self.assertEqual(len(counts["warnings"]), 2)
@@ -161,8 +162,46 @@ class BuildSummaryTests(unittest.TestCase):
     def test_no_warnings_when_inputs_present(self):
         self.add("a.pdf", make_md("Strong match", rows_for(1, 1)))
         (self.dir / ".text" / "_scan.json").write_text("{}", encoding="utf-8")
+        (self.dir / "_requirements.md").write_text("1. [must] Req 1\n", encoding="utf-8")
         _, counts = self.finish()
         self.assertEqual(counts["warnings"], [])
+
+    def test_failed_file_quarantined(self):
+        """F3b: failing assessments move to .failed/ and the summary says where."""
+        self.add("bad.pdf", make_md("Strong match", [("must", SHOWN, '"Led a team of 40 people"')]))
+        self.add("ok.pdf", make_md("Strong match", rows_for(1, 1)))
+        (self.dir / "junk.pdf.md").write_bytes(bytes(range(256)) * 4)
+        md, counts = self.finish()
+        self.assertFalse((self.dir / "bad.pdf.md").exists())
+        self.assertFalse((self.dir / "junk.pdf.md").exists())
+        self.assertTrue((self.dir / ".failed" / "bad.pdf.md").is_file())
+        self.assertTrue((self.dir / ".failed" / "junk.pdf.md").is_file())
+        self.assertTrue((self.dir / "ok.pdf.md").is_file())
+        self.assertIn("assessments/.failed/", md.split("## Failed automatic checks")[1])
+
+    def test_quarantine_overwrites_previous_failure(self):
+        (self.dir / ".failed").mkdir()
+        (self.dir / ".failed" / "bad.pdf.md").write_text("old", encoding="utf-8")
+        self.add("bad.pdf", make_md("Weak match", rows_for(1, 1)))
+        _, counts = self.finish()
+        self.assertEqual(counts["failed_checks"], ["bad.pdf"])
+        self.assertNotEqual((self.dir / ".failed" / "bad.pdf.md").read_text(encoding="utf-8"), "old")
+
+    def test_requirements_enforced(self):
+        """F1: build_summary checks the table against _requirements.md."""
+        (self.dir / "_requirements.md").write_text("1. [must] Req 1\n2. [must] Req 2\n", encoding="utf-8")
+        self.add("short.pdf", make_md("Strong match", rows_for(1, 1)))
+        self.add("full.pdf", make_md("Strong match", rows_for(2, 2)))
+        _, counts = self.finish()
+        self.assertEqual(counts["failed_checks"], ["short.pdf"])
+        self.assertEqual(counts["assessed"], 1)
+
+    def test_missing_requirements_warns(self):
+        self.add("a.pdf", make_md("Strong match", rows_for(1, 1)))
+        (self.dir / ".text" / "_scan.json").write_text("{}", encoding="utf-8")
+        md, counts = self.finish()
+        self.assertTrue(any("_requirements.md" in w for w in counts["warnings"]), counts)
+        self.assertEqual(counts["assessed"], 1)
 
     def test_garbage_file_isolated(self):
         self.add("ok.pdf", make_md("Strong match", rows_for(1, 1)))
