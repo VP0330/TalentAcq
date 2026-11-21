@@ -1,0 +1,8 @@
+{
+  "name": "resume-screener",
+  "version": "0.1.0",
+  "description": "Screen resumes against a job description with evidence-backed assessments.",
+  "author": {
+    "name": "Talent Team"
+  }
+}

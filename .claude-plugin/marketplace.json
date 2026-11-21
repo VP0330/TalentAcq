@@ -1,0 +1,14 @@
+{
+  "name": "talent-tools",
+  "owner": {
+    "name": "Talent Team"
+  },
+  "plugins": [
+    {
+      "name": "resume-screener",
+      "source": "./plugins/resume-screener",
+      "description": "Screen resumes against a job description with evidence-backed assessments.",
+      "version": "0.1.0"
+    }
+  ]
+}
