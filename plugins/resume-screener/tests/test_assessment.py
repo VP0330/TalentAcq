@@ -146,6 +146,62 @@ class AssessmentTests(unittest.TestCase):
         self.assertEqual(a.gaps, ["No SaaS experience"])
         self.assertIn("## Screening flags", a.sections)
 
+    def test_pipes_in_evidence(self):
+        resume = "Skills: Python | SQL | AWS"
+        for ev in ('"Python | SQL | AWS"', '"Python \\| SQL \\| AWS"'):
+            with self.subTest(ev=ev):
+                md = make_md("Strong match", [("must", SHOWN, ev)])
+                self.assertEqual(validate(md, resume, None), [])
+        self.assertTrue(quote_found("Python|SQL", resume))
+
+    def test_malformed_rows_rejected(self):
+        base = make_md("Strong match", GOOD_ROWS)
+        for bad in (
+            "| R1 | Req | must | Shown | \"Managed key accounts\" |",
+            "| 3 | Req | must | Shown |",
+            "| x | y |",
+        ):
+            with self.subTest(bad=bad):
+                md = base.replace("\n\n## Experience", "\n" + bad + "\n\n## Experience", 1)
+                errs = validate(md, RESUME, None)
+                self.assertTrue(any("Malformed" in e for e in errs), errs)
+        # no valid rows at all
+        md = make_md("Strong match", [])
+        self.assertTrue(any("no valid rows" in e for e in validate(md, RESUME, None)))
+
+    def test_numbering_decoration_tolerated(self):
+        md = make_md("Strong match", GOOD_ROWS)
+        md = md.replace("| 1 |", "| 1. |").replace("| 2 |", "| **2** |")
+        self.assertEqual(validate(md, RESUME, None), [])
+
+    def test_banned_word_in_evidence_quote_allowed(self):
+        resume = "Reduced claim rejection rate by 20%"
+        rows = [("must", SHOWN, '"reduced claim rejection rate"')]
+        self.assertEqual(validate(make_md("Strong match", rows), resume, None), [])
+        md = make_md("Strong match", rows, extra="\nWe reject this\n")
+        self.assertEqual(len(validate(md, resume, None)), 1)
+
+    def test_html_only_real_tags(self):
+        resume = "Wrote List<String> helpers"
+        rows = [("must", SHOWN, '"List<String> helpers"')]
+        self.assertEqual(validate(make_md("Strong match", rows), resume, None), [])
+        md = make_md("Strong match", GOOD_ROWS, extra="\n<script>x</script>\n")
+        self.assertTrue(validate(md, RESUME, None))
+
+    def test_emphasis_decoration_parsed(self):
+        md = make_md("Strong match", GOOD_ROWS)
+        md = md.replace("Fit: Strong match", "**Fit:** **Strong match**")
+        md = md.replace("Requirements met:", "**Requirements met:**")
+        md = md.replace("| Shown |", "| **Shown** |")
+        a = parse_assessment(md)
+        self.assertEqual(a.fit_label, "Strong match")
+        self.assertEqual(a.met, (2, 2))
+        self.assertEqual(validate(md, RESUME, None), [])
+
+    def test_first_fit_line_wins(self):
+        md = make_md("Strong match", GOOD_ROWS) + "\nFit: Weak match\n"
+        self.assertEqual(parse_assessment(md).fit_label, "Strong match")
+
     def test_missing_resume_text(self):
         errs = validate(make_md("Strong match", GOOD_ROWS), None, None)
         self.assertTrue(any("Resume text not found" in e for e in errs), errs)
