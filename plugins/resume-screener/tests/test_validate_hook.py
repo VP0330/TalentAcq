@@ -82,6 +82,16 @@ class HookTests(unittest.TestCase):
         r = run(self.payload())
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertIn("extracted successfully", r.stderr)
+        self.assertIn("required — a manual-review stub", r.stderr)
+
+    def test_failure_feedback_is_utf8_with_non_ascii_quote(self):
+        quote = "“José’s team” — led"
+        md = HEAD.format(fit="Strong match").replace('"Sold software"', f'"{quote}"')
+        self.path.write_text(md, encoding="utf-8")
+        r = run(self.payload())
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("Assessment check failed", r.stderr)
+        self.assertIn(quote, r.stderr)
 
     def test_stub_allowed_for_unreadable_resume(self):
         self._manifest("no_text_layer")

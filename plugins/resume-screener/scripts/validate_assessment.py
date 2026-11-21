@@ -22,6 +22,17 @@ def _extracted_ok(adir: Path, name: str) -> bool:
         return False
 
 
+def _emit(msg: str) -> None:
+    """Write feedback as UTF-8 bytes; the Windows console codepage would garble it."""
+    buf = getattr(sys.stderr, "buffer", None)
+    if buf is None:
+        sys.stderr.write(msg)
+        return
+    sys.stderr.flush()
+    buf.write(msg.encode("utf-8", errors="replace"))
+    buf.flush()
+
+
 def main() -> int:
     payload = json.loads(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
     path = Path(payload["tool_input"]["file_path"])
@@ -43,19 +54,15 @@ def main() -> int:
         scan_entry = scan.get(name)
 
     if MANUAL_REVIEW_MARKER in md and _extracted_ok(adir, name):
-        msg = (
+        _emit(
             "This resume was extracted successfully, so a full assessment is required "
             "— a manual-review stub is only for files that could not be read.\n"
         )
-        # Emit UTF-8 explicitly: the Windows console codepage would mangle the em dash.
-        sys.stderr.flush()
-        sys.stderr.buffer.write(msg.encode("utf-8"))
-        sys.stderr.buffer.flush()
         return 2
 
     errors = validate(md, resume_text, scan_entry)
     if errors:
-        sys.stderr.write(f"Assessment check failed for {path.name}:\n- " + "\n- ".join(errors) + "\n")
+        _emit(f"Assessment check failed for {path.name}:\n- " + "\n- ".join(errors) + "\n")
         return 2
     return 0
 
