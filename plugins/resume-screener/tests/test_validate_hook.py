@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "validate_assessment.py"
+
+HEAD = (
+    "# Candidate: a.pdf\nFit: {fit}\nRequirements met: 1/1 must-haves shown\n\n"
+    "## Requirements\n| # | Requirement (from JD) | Type | Status | Evidence from resume |\n"
+    "|---|---|---|---|---|\n| 1 | R | must | Shown | \"Sold software\" |\n\n"
+    "## Experience overview\nx\n\n## Strengths\n- a\n\n## Gaps\n- b\n\n"
+    "## Suggested screen questions\n- q\n"
+)
+
+
+def run(payload):
+    return subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+
+class HookTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name) / "role"
+        self.adir = self.root / "assessments"
+        (self.adir / ".text").mkdir(parents=True)
+        (self.adir / ".text" / "a.pdf.txt").write_text("I Sold software daily", encoding="utf-8")
+        self.path = self.adir / "a.pdf.md"
+
+    def payload(self, p=None, tool="Write"):
+        p = str(p or self.path)
+        if tool == "Edit":
+            ti = {"file_path": p, "old_string": "x", "new_string": "y"}
+        else:
+            ti = {"file_path": p, "content": "ignored"}
+        return {"tool_name": tool, "tool_input": ti, "cwd": str(self.root)}
+
+    def test_hook_blocks_invalid_with_exit_2(self):
+        self.path.write_text(HEAD.format(fit="Weak match"), encoding="utf-8")
+        r = run(self.payload())
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("Assessment check failed", r.stderr)
+
+    def test_hook_ignores_other_files(self):
+        p = self.root / "notes.md"
+        p.write_text("[x](http://a)", encoding="utf-8")
+        self.assertEqual(run(self.payload(p)).returncode, 0)
+
+    def test_hook_ignores_underscore_files(self):
+        p = self.adir / "_summary.md"
+        p.write_text("[x](http://a)", encoding="utf-8")
+        self.assertEqual(run(self.payload(p)).returncode, 0)
+
+    def test_hook_reads_file_from_disk_for_edit(self):
+        self.path.write_text(HEAD.format(fit="Strong match"), encoding="utf-8")
+        self.assertEqual(run(self.payload(tool="Edit")).returncode, 0)
+        self.path.write_text(HEAD.format(fit="Weak match"), encoding="utf-8")
+        self.assertEqual(run(self.payload(tool="Edit")).returncode, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
