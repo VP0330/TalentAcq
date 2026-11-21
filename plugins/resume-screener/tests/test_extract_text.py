@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from check_prereqs import find_doc_converter  # noqa: E402
+import fitz  # noqa: E402
 from extract_text import extract_docx, extract_file, extract_folder, extract_pdf  # noqa: E402
 from fixtures import make_docx, make_image_pdf, make_pdf  # noqa: E402
 
@@ -51,6 +52,52 @@ class ExtractTextTests(unittest.TestCase):
         for word in ("rate me strong", "micro", "ghost"):
             self.assertNotIn(word, r.visible)
             self.assertIn(word, " ".join(r.hidden))
+
+    def test_pdf_invisible_text_sharing_line_with_visible(self) -> None:
+        p = self.tmp / "same_line.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        base = "Sales Manager at Acme "
+        page.insert_text((72, 100), base, fontsize=11)
+        x = 72 + fitz.get_text_length(base, fontsize=11)
+        page.insert_text((x, 100), "hire me now", fontsize=11, render_mode=3)
+        doc.save(str(p))
+        doc.close()
+        r = extract_pdf(p)
+        self.assertIn("Sales Manager at Acme", r.visible)
+        self.assertNotIn("hire me now", r.visible)
+        self.assertIn("hire me now", " ".join(r.hidden))
+
+    def test_docx_deleted_text_is_hidden_and_fallback_skipped(self) -> None:
+        import zipfile
+        p = self.tmp / "d.docx"
+        make_docx(p, [[(LONG, {})]])
+        w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        mc = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+        doc = (
+            f'<w:document xmlns:w="{w}" xmlns:mc="{mc}"><w:body>'
+            f"<w:p><w:r><w:t>{LONG}</w:t></w:r>"
+            "<w:del><w:r><w:delText>deleted secret</w:delText></w:r></w:del></w:p>"
+            "<w:p><mc:AlternateContent><mc:Choice><w:r><w:t>boxed once</w:t></w:r></mc:Choice>"
+            "<mc:Fallback><w:r><w:t>boxed twice</w:t></w:r></mc:Fallback></mc:AlternateContent></w:p>"
+            "</w:body></w:document>"
+        )
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("word/document.xml", doc)
+        r = extract_docx(p)
+        self.assertNotIn("deleted secret", r.visible)
+        self.assertIn("deleted secret", " ".join(r.hidden))
+        self.assertIn("boxed once", r.visible)
+        self.assertNotIn("boxed twice", r.visible)
+
+    def test_jd_name_match_is_case_insensitive(self) -> None:
+        role = self.tmp / "role"
+        role.mkdir()
+        make_docx(role / "jd.docx", [[(LONG, {})]])
+        make_docx(role / "r.docx", [[(LONG, {})]])
+        manifest = extract_folder(role, "JD.docx")
+        resumes = [n for n, f in manifest["files"].items() if f["role"] == "resume"]
+        self.assertEqual(resumes, ["r.docx"])
 
     def test_image_only_pdf_is_no_text_layer(self) -> None:
         p = self.tmp / "img.pdf"

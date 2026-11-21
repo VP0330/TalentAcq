@@ -24,6 +24,7 @@ from common import RESUME_EXTS, text_dir  # noqa: E402
 from check_prereqs import find_doc_converter  # noqa: E402
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
 _NEAR_WHITE = 0xF0
 _MIN_CHARS = 50
 _DOC_TIMEOUT = 60
@@ -85,7 +86,7 @@ def _run_hidden(run: ET.Element) -> bool:
 def _run_text(run: ET.Element) -> str:
     parts = []
     for child in run:
-        if child.tag == f"{_W}t" or child.tag == f"{_W}delText":
+        if child.tag == f"{_W}t":
             parts.append(child.text or "")
         elif child.tag == f"{_W}tab":
             parts.append("\t")
@@ -101,7 +102,9 @@ def _own_runs(el: ET.Element):
     for child in el:
         if child.tag == f"{_W}r":
             yield child
-        elif child.tag != f"{_W}p":
+        elif child.tag in (f"{_W}p", _MC + "Fallback"):
+            continue
+        else:
             yield from _own_runs(child)
 
 
@@ -114,6 +117,9 @@ def extract_docx(path: Path) -> Extracted:
     for p in root.iter(f"{_W}p"):
         vis, hid = [], []
         for run in _own_runs(p):
+            deleted = "".join(d.text or "" for d in run.findall(f"{_W}delText"))
+            if deleted:
+                hid.append(deleted)  # tracked deletion: not part of the final document
             text = _run_text(run)
             if not text:
                 continue
@@ -133,20 +139,28 @@ def _rgb_near_white(color: int) -> bool:
     return min(r, g, b) >= _NEAR_WHITE
 
 
-def _trace_hidden_texts(page) -> set[str]:
-    hidden: set[str] = set()
+def _trace_hidden_chars(page) -> list[tuple[str, "object"]]:
+    """(char, bbox) for every glyph drawn invisibly (render mode 3 / opacity 0)."""
+    import fitz
+
+    out: list[tuple[str, object]] = []
     try:
         trace = page.get_texttrace()
     except Exception:
-        return hidden
+        return out
     for entry in trace:
         if entry.get("type") == 3 or entry.get("opacity") == 0:
-            text = "".join(ch[0] if isinstance(ch[0], str) else chr(ch[0])
-                           for ch in entry.get("chars", ()))
-            text = text.strip()
-            if text:
-                hidden.add(text)
-    return hidden
+            for ch in entry.get("chars", ()):
+                c = ch[0] if isinstance(ch[0], str) else chr(ch[0])
+                out.append((c, fitz.Rect(ch[3])))
+    return out
+
+
+def _char_in_hidden(char: dict, hidden_chars) -> bool:
+    c = char.get("c", "")
+    x0, y0, x1, y1 = char["bbox"]
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    return any(hc == c and r.x0 <= cx <= r.x1 and r.y0 <= cy <= r.y1 for hc, r in hidden_chars)
 
 
 def extract_pdf(path: Path) -> Extracted:
@@ -159,35 +173,39 @@ def extract_pdf(path: Path) -> Extracted:
         blocks_out: list[str] = []
         hidden: list[str] = []
         for page in doc:
-            trace_hidden = _trace_hidden_texts(page)
+            hidden_chars = _trace_hidden_chars(page)
             rect = page.rect
-            for block in page.get_text("dict").get("blocks", []):
+            for block in page.get_text("rawdict").get("blocks", []):
                 if block.get("type", 0) != 0:
                     continue
                 lines_out: list[str] = []
                 for line in block.get("lines", []):
                     vis_spans: list[str] = []
                     for span in line.get("spans", []):
-                        text = span.get("text", "")
+                        chars = span.get("chars", [])
+                        text = "".join(c.get("c", "") for c in chars)
                         if not text.strip():
                             vis_spans.append(text)
                             continue
-                        is_hidden = (
+                        if (
                             _rgb_near_white(span.get("color", 0))
                             or span.get("size", 12) < 4
                             or not fitz.Rect(span["bbox"]).intersects(rect)
-                            or text.strip() in trace_hidden
-                        )
-                        if is_hidden:
+                        ):
                             hidden.append(text.strip())
-                        else:
-                            vis_spans.append(text)
+                            continue
+                        vis, hid = [], []
+                        for ch in chars:
+                            (hid if _char_in_hidden(ch, hidden_chars) else vis).append(ch.get("c", ""))
+                        if hid:
+                            hidden.append("".join(hid).strip())
+                        vis_spans.append("".join(vis))
                     line_text = "".join(vis_spans).strip()
                     if line_text:
                         lines_out.append(line_text)
                 if lines_out:
-                    blocks_out.append("\n".join(lines_out))
-        return Extracted("\n\n".join(blocks_out), hidden, "pdf")
+                    blocks_out.append(chr(10).join(lines_out))
+        return Extracted((chr(10) * 2).join(blocks_out), hidden, "pdf")
     finally:
         doc.close()
 
@@ -295,7 +313,9 @@ def extract_folder(role_folder: Path, jd_name: str) -> dict:
     targets: list[tuple[str, str]] = [(jd_name, "jd")]
     resumes = sorted(
         p.name for p in role_folder.iterdir()
-        if p.is_file() and p.suffix.lower() in RESUME_EXTS and p.name != jd_name
+        if p.is_file()
+        and p.suffix.lower() in RESUME_EXTS
+        and os.path.normcase(p.name) != os.path.normcase(jd_name)
     )
     targets += [(name, "resume") for name in resumes]
 
