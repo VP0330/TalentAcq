@@ -9,7 +9,6 @@ import argparse
 import importlib.util
 import json
 import shutil
-import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -20,25 +19,17 @@ from common import RESUME_EXTS  # noqa: E402,F401
 
 REQUIREMENTS = Path(__file__).resolve().parent / "requirements.txt"
 
-_WORD_PROBE = (
-    "$w = New-Object -ComObject Word.Application; "
-    "$w.Quit(); "
-    "[void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($w)"
-)
-
-
-# Cheap fallback when launching Word is too slow to finish inside the timeout:
-# only checks that the Word.Application COM class is registered.
-_WORD_REGISTERED = "if ([type]::GetTypeFromProgID('Word.Application')) { exit 0 } else { exit 1 }"
-
-
-def _run_ps(exe: str, script: str) -> bool:
-    result = subprocess.run(
-        [exe, "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output=True,
-        timeout=5,
-    )
-    return result.returncode == 0
+def _word_registered() -> bool:
+    """True if the Word.Application COM ProgID is registered (no process started)."""
+    try:
+        import winreg
+    except ImportError:
+        return False
+    try:
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r"Word.Application\CLSID"):
+            return True
+    except OSError:
+        return False
 
 
 @dataclass
@@ -75,22 +66,8 @@ def check_pymupdf() -> Check:
 
 def find_doc_converter() -> str | None:
     """Return "word", "libreoffice", or None."""
-    for exe in ("powershell", "pwsh"):
-        if not shutil.which(exe):
-            continue
-        try:
-            if _run_ps(exe, _WORD_PROBE):
-                return "word"
-        except subprocess.TimeoutExpired:
-            # Word can take ~5 s to cold-start; fall back to registration check.
-            try:
-                if _run_ps(exe, _WORD_REGISTERED):
-                    return "word"
-            except (subprocess.TimeoutExpired, OSError):
-                pass
-        except OSError:
-            pass
-        break
+    if _word_registered():
+        return "word"
     if shutil.which("soffice"):
         return "libreoffice"
     return None
@@ -133,6 +110,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--folder", type=Path, default=None)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+
+    if args.folder is not None and not args.folder.is_dir():
+        msg = f"Folder not found: {args.folder}"
+        if args.json:
+            print(json.dumps([{"name": "Resume folder", "ok": False, "detail": msg,
+                               "fix": "Pass an existing folder with --folder.", "required": True}], indent=2))
+        else:
+            print(f"MISSING: Resume folder - {msg}
+  Fix: Pass an existing folder with --folder.")
+        return 1
 
     checks = check_all(args.folder)
     if args.json:
