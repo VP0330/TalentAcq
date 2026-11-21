@@ -12,7 +12,7 @@ SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "validate_assessme
 HEAD = (
     "# Candidate: a.pdf\nFit: {fit}\nRequirements met: 1/1 must-haves shown\n\n"
     "## Requirements\n| # | Requirement (from JD) | Type | Status | Evidence from resume |\n"
-    "|---|---|---|---|---|\n| 1 | R | must | Shown | \"Sold software\" |\n\n"
+    "|---|---|---|---|---|\n| 1 | R | must | Shown | \"Sold software daily\" |\n\n"
     "## Experience overview\nx\n\n## Strengths\n- a\n\n## Gaps\n- b\n\n"
     "## Suggested screen questions\n- q\n"
 )
@@ -38,7 +38,8 @@ class HookTests(unittest.TestCase):
         self.root = Path(self._tmp.name) / "role"
         self.adir = self.root / "assessments"
         (self.adir / ".text").mkdir(parents=True)
-        (self.adir / ".text" / "a.pdf.txt").write_text("I Sold software daily", encoding="utf-8")
+        (self.adir / ".text" / "a.pdf.txt").write_text("I Sold software daily for years", encoding="utf-8")
+        self._manifest("ok")
         self.path = self.adir / "a.pdf.md"
 
     def payload(self, p=None, tool="Write"):
@@ -86,12 +87,41 @@ class HookTests(unittest.TestCase):
 
     def test_failure_feedback_is_utf8_with_non_ascii_quote(self):
         quote = "“José’s team” — led"
-        md = HEAD.format(fit="Strong match").replace('"Sold software"', f'"{quote}"')
+        md = HEAD.format(fit="Strong match").replace('"Sold software daily"', f'"{quote}"')
         self.path.write_text(md, encoding="utf-8")
         r = run(self.payload())
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertIn("Assessment check failed", r.stderr)
         self.assertIn(quote, r.stderr)
+
+    def test_ignores_assessments_folder_without_extract_manifest(self):
+        (self.adir / ".text" / "_extract.json").unlink()
+        self.path.write_text(HEAD.format(fit="Weak match"), encoding="utf-8")
+        self.assertEqual(run(self.payload()).returncode, 0)
+
+    def test_path_resolved_and_case_insensitive(self):
+        self.path.write_text(HEAD.format(fit="Weak match"), encoding="utf-8")
+        odd = str(self.adir / ".text" / ".." / "a.pdf.md")
+        self.assertEqual(run(self.payload(odd)).returncode, 2)
+        if sys.platform == "win32":
+            upper = str(self.root / "ASSESSMENTS" / "a.pdf.md")
+            self.assertEqual(run(self.payload(upper)).returncode, 2)
+
+    def test_malformed_scan_json_blocks_visibly(self):
+        self.path.write_text(HEAD.format(fit="Strong match"), encoding="utf-8")
+        (self.adir / ".text" / "_scan.json").write_text("{broken", encoding="utf-8")
+        r = run(self.payload())
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("scan record unreadable", r.stderr.lower())
+
+    def test_requirements_file_enforced(self):
+        self.path.write_text(HEAD.format(fit="Strong match"), encoding="utf-8")
+        (self.adir / "_requirements.md").write_text("1. [must] R\n", encoding="utf-8")
+        self.assertEqual(run(self.payload()).returncode, 0)
+        (self.adir / "_requirements.md").write_text("1. [must] Something else\n", encoding="utf-8")
+        r = run(self.payload())
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("Row 1: requirement text", r.stderr)
 
     def test_stub_allowed_for_unreadable_resume(self):
         self._manifest("no_text_layer")
