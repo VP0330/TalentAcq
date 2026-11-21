@@ -18,6 +18,9 @@ HEAD = (
 )
 
 
+STUB = "# Candidate: a.pdf\nStatus: Needs manual review\n"
+
+
 def run(payload):
     return subprocess.run(
         [sys.executable, str(SCRIPT)],
@@ -67,6 +70,24 @@ class HookTests(unittest.TestCase):
         self.assertEqual(run(self.payload(tool="Edit")).returncode, 0)
         self.path.write_text(HEAD.format(fit="Weak match"), encoding="utf-8")
         self.assertEqual(run(self.payload(tool="Edit")).returncode, 2)
+
+
+    def _manifest(self, status):
+        (self.adir / ".text" / "_extract.json").write_text(
+            json.dumps({"files": {"a.pdf": {"status": status}}}), encoding="utf-8")
+
+    def test_stub_rejected_for_readable_resume(self):
+        self._manifest("ok")
+        self.path.write_text(STUB, encoding="utf-8")
+        r = run(self.payload())
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("extracted successfully", r.stderr)
+
+    def test_stub_allowed_for_unreadable_resume(self):
+        self._manifest("no_text_layer")
+        self.path.write_text(STUB, encoding="utf-8")
+        r = run(self.payload())
+        self.assertEqual(r.returncode, 0, r.stderr)
 
 
 if __name__ == "__main__":

@@ -47,6 +47,13 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(self.call("Read", self.role / "a.pdf"), "deny")
         self.assertEqual(self.call("Read", "C:/Users/x/secrets.txt"), "deny")
 
+    def test_reviewer_cannot_read_raw_scan_or_manifest(self):
+        self.assertEqual(self.call("Read", self.ass / ".text" / "_scan.json"), "deny")
+        self.assertEqual(self.call("Read", self.ass / ".text" / "_extract.json"), "deny")
+
+    def test_reviewer_can_read_flags_summary(self):
+        self.assertEqual(self.call("Read", self.ass / ".text" / "_flags_summary.json"), "allow")
+
     def test_reviewer_write_rules(self):
         self.assertEqual(self.call("Write", self.ass / "a.pdf.md"), "allow")
         self.assertEqual(self.call("Edit", self.ass / "a.pdf.md"), "allow")

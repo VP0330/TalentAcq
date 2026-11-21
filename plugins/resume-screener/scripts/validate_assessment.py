@@ -8,7 +8,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from assessment import validate  # noqa: E402
-from common import resume_name_from_assessment, text_dir, text_path_for  # noqa: E402
+from common import MANUAL_REVIEW_MARKER, resume_name_from_assessment, text_dir, text_path_for  # noqa: E402
+
+
+def _extracted_ok(adir: Path, name: str) -> bool:
+    """True only if the extract manifest is readable and lists ``name`` with status ok."""
+    try:
+        manifest = json.loads(
+            (text_dir(adir) / "_extract.json").read_text(encoding="utf-8", errors="replace")
+        )
+        return manifest["files"][name]["status"] == "ok"
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def main() -> int:
@@ -30,6 +41,17 @@ def main() -> int:
     if scan_file.is_file():
         scan = json.loads(scan_file.read_text(encoding="utf-8", errors="replace"))
         scan_entry = scan.get(name)
+
+    if MANUAL_REVIEW_MARKER in md and _extracted_ok(adir, name):
+        msg = (
+            "This resume was extracted successfully, so a full assessment is required "
+            "— a manual-review stub is only for files that could not be read.\n"
+        )
+        # Emit UTF-8 explicitly: the Windows console codepage would mangle the em dash.
+        sys.stderr.flush()
+        sys.stderr.buffer.write(msg.encode("utf-8"))
+        sys.stderr.buffer.flush()
+        return 2
 
     errors = validate(md, resume_text, scan_entry)
     if errors:

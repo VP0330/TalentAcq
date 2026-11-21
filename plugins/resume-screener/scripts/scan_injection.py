@@ -106,6 +106,19 @@ def is_flagged(flags: list[Flag]) -> bool:
     return any(f.kind != "keyword_run" for f in flags)
 
 
+def summarize_flags(scan: dict) -> dict:
+    """Counts per flag kind for each entry; carries no resume-derived text."""
+    out: dict = {}
+    for name, entry in scan.items():
+        kinds: dict = {}
+        for f in entry.get("flags", []):
+            k = f.get("kind")
+            if isinstance(k, str):
+                kinds[k] = kinds.get(k, 0) + 1
+        out[name] = {"flagged": bool(entry.get("flagged")), "kinds": kinds}
+    return out
+
+
 def scan_folder(assessments_dir: Path) -> dict:
     tdir = text_dir(Path(assessments_dir))
     manifest = json.loads((tdir / "_extract.json").read_text(encoding="utf-8"))
@@ -125,6 +138,9 @@ def scan_folder(assessments_dir: Path) -> dict:
         }
     (tdir / "_scan.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (tdir / "_flags_summary.json").write_text(
+        json.dumps(summarize_flags(result), ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return result
 

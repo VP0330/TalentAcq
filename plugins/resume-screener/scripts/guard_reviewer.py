@@ -17,6 +17,7 @@ from common import is_within, norm_path  # noqa: E402
 
 LOCK_REL = Path(".claude") / "resume-screener.lock"
 GUARDED_TOOLS = ("Read", "Write", "Edit")
+RAW_MANIFESTS = (os.path.normcase("_scan.json"), os.path.normcase("_extract.json"))
 
 
 def set_lock(cwd: Path, role_folder: Path) -> Path:
@@ -85,6 +86,10 @@ def decide(hook_input: dict, lock: dict | None, plugin_root: Path) -> tuple[str,
         if is_within(target, assessments / ".text") and target != Path(norm_path(assessments / ".text")):
             if target.name.endswith(".hidden.txt"):
                 return _deny(raw, "hidden-text files are off limits to reviewers")
+            if os.path.normcase(target.name) in RAW_MANIFESTS:
+                return _deny(
+                    raw, "raw scan/extract manifests are off limits; use _flags_summary.json"
+                )
             return ("allow", "")
         if target == Path(norm_path(assessments / "_requirements.md")):
             return ("allow", "")
