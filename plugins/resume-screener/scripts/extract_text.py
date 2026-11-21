@@ -1,6 +1,7 @@
 """Extract visible text from resumes/JDs and separate hidden text.
 
-Hidden text (white, tiny, invisible, vanished, off-page) is written apart so the
+Hidden text (white on a light background, tiny, invisible, vanished incl. via DOCX styles,
+off-page) is written apart so the
 AI reviewer never sees it and it can be flagged as possible prompt injection.
 """
 from __future__ import annotations
@@ -52,34 +53,113 @@ class Extracted:
 
 # ---------------------------------------------------------------- DOCX
 
-def _near_white(val: str) -> bool:
-    val = val.strip()
+def _hex_rgb(val: str):
+    val = (val or "").strip()
     if len(val) != 6:
-        return False
+        return None
     try:
-        r, g, b = int(val[0:2], 16), int(val[2:4], 16), int(val[4:6], 16)
+        return int(val[0:2], 16), int(val[2:4], 16), int(val[4:6], 16)
     except ValueError:
-        return False
-    return min(r, g, b) >= _NEAR_WHITE
+        return None
 
 
-def _run_hidden(run: ET.Element) -> bool:
-    rpr = run.find(f"{_W}rPr")
-    if rpr is None:
+def _near_white(val: str) -> bool:
+    rgb = _hex_rgb(val)
+    return rgb is not None and min(rgb) >= _NEAR_WHITE
+
+
+def _luminance(r: float, g: float, b: float) -> float:
+    """Relative luminance (0..1) of 0..1 RGB components."""
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _dark_shd(shd) -> bool:
+    """True if a ``w:shd`` element paints a dark background (luminance < 0.5)."""
+    if shd is None:
         return False
-    vanish = rpr.find(f"{_W}vanish")
-    if vanish is not None and vanish.get(f"{_W}val", "true").lower() not in ("0", "false", "off"):
-        return True
-    color = rpr.find(f"{_W}color")
-    if color is not None and _near_white(color.get(f"{_W}val", "")):
-        return True
-    sz = rpr.find(f"{_W}sz")
-    if sz is not None:
+    val = (shd.get(f"{_W}val") or "").lower()
+    fill = shd.get(f"{_W}color") if val == "solid" else shd.get(f"{_W}fill")
+    rgb = _hex_rgb(fill or "")
+    return rgb is not None and _luminance(*(c / 255 for c in rgb)) < 0.5
+
+
+def _on(el) -> bool:
+    return el.get(f"{_W}val", "true").lower() not in ("0", "false", "off")
+
+
+class _Styles:
+    """Run properties defined in ``word/styles.xml`` (docDefaults + basedOn chains)."""
+
+    def __init__(self, xml: bytes | None):
+        self.by_id: dict = {}
+        self.defaults = None
+        if not xml:
+            return
         try:
-            if int(sz.get(f"{_W}val", "")) < 8:
-                return True
-        except ValueError:
-            pass
+            root = ET.fromstring(xml)
+        except ET.ParseError:
+            return
+        for st in root.iter(f"{_W}style"):
+            sid = st.get(f"{_W}styleId")
+            if sid:
+                self.by_id[sid] = st
+        self.defaults = root.find(f"{_W}docDefaults/{_W}rPrDefault/{_W}rPr")
+
+    def chain(self, sid: str | None) -> list:
+        """Style elements from the root of the basedOn chain down to ``sid``."""
+        out, seen = [], set()
+        while sid and sid in self.by_id and sid not in seen:
+            seen.add(sid)
+            st = self.by_id[sid]
+            out.append(st)
+            based = st.find(f"{_W}basedOn")
+            sid = based.get(f"{_W}val") if based is not None else None
+        return out[::-1]
+
+
+def _apply_rpr(props: dict, rpr) -> None:
+    if rpr is None:
+        return
+    for child in rpr:
+        tag = child.tag
+        if tag == f"{_W}vanish":
+            props["vanish"] = _on(child)
+        elif tag == f"{_W}color":
+            props["color"] = child.get(f"{_W}val", "")
+        elif tag == f"{_W}sz":
+            try:
+                props["sz"] = int(child.get(f"{_W}val", ""))
+            except ValueError:
+                pass
+        elif tag == f"{_W}shd":
+            props["shd_dark"] = _dark_shd(child)
+
+
+def _run_props(run: ET.Element, para_style: str | None, styles: _Styles) -> dict:
+    """Effective run properties: docDefaults < paragraph style < character style < direct."""
+    props: dict = {}
+    _apply_rpr(props, styles.defaults)
+    for st in styles.chain(para_style):
+        _apply_rpr(props, st.find(f"{_W}rPr"))
+    rpr = run.find(f"{_W}rPr")
+    if rpr is not None:
+        rstyle = rpr.find(f"{_W}rStyle")
+        if rstyle is not None:
+            for st in styles.chain(rstyle.get(f"{_W}val")):
+                _apply_rpr(props, st.find(f"{_W}rPr"))
+    _apply_rpr(props, rpr)
+    return props
+
+
+def _run_hidden(run: ET.Element, para_style: str | None = None, styles: _Styles | None = None,
+                dark_background: bool = False) -> bool:
+    props = _run_props(run, para_style, styles or _Styles(None))
+    if props.get("vanish"):
+        return True
+    if props.get("sz", 99) < 8:
+        return True
+    if _near_white(props.get("color", "")) and not (dark_background or props.get("shd_dark")):
+        return True
     return False
 
 
@@ -108,13 +188,38 @@ def _own_runs(el: ET.Element):
             yield from _own_runs(child)
 
 
+def _para_background(p: ET.Element, para_style: str | None, styles: _Styles, parents: dict) -> bool:
+    """True if the paragraph, its style chain, or its enclosing table cell has dark shading."""
+    if _dark_shd(p.find(f"{_W}pPr/{_W}shd")):
+        return True
+    shds = [st.find(f"{_W}pPr/{_W}shd") for st in styles.chain(para_style)]
+    shds = [s for s in shds if s is not None]
+    if shds and _dark_shd(shds[-1]):
+        return True
+    el = parents.get(p)
+    while el is not None:
+        if el.tag == f"{_W}tc":
+            return _dark_shd(el.find(f"{_W}tcPr/{_W}shd"))
+        el = parents.get(el)
+    return False
+
+
 def extract_docx(path: Path) -> Extracted:
     with zipfile.ZipFile(path) as z:
         data = z.read("word/document.xml")
+        try:
+            styles_xml = z.read("word/styles.xml")
+        except KeyError:
+            styles_xml = None
     root = ET.fromstring(data)
+    styles = _Styles(styles_xml)
+    parents = {child: parent for parent in root.iter() for child in parent}
     visible_paras: list[str] = []
     hidden: list[str] = []
     for p in root.iter(f"{_W}p"):
+        pstyle_el = p.find(f"{_W}pPr/{_W}pStyle")
+        para_style = pstyle_el.get(f"{_W}val") if pstyle_el is not None else None
+        dark = _para_background(p, para_style, styles, parents)
         vis, hid = [], []
         for run in _own_runs(p):
             deleted = "".join(d.text or "" for d in run.findall(f"{_W}delText"))
@@ -123,7 +228,7 @@ def extract_docx(path: Path) -> Extracted:
             text = _run_text(run)
             if not text:
                 continue
-            (hid if _run_hidden(run) else vis).append(text)
+            (hid if _run_hidden(run, para_style, styles, dark) else vis).append(text)
         if vis:
             visible_paras.append("".join(vis))
         hidden_text = "".join(hid).strip()
@@ -156,6 +261,31 @@ def _trace_hidden_chars(page) -> list[tuple[str, "object"]]:
     return out
 
 
+def _dark_backgrounds(page) -> list:
+    """Rects of dark filled drawings (luminance < 0.5) and of images on the page."""
+    import fitz
+
+    rects = []
+    try:
+        for d in page.get_drawings():
+            fill = d.get("fill")
+            if fill and len(fill) >= 3 and _luminance(*fill[:3]) < 0.5:
+                rects.append(fitz.Rect(d["rect"]))
+    except Exception:
+        pass
+    try:
+        rects += [fitz.Rect(info["bbox"]) for info in page.get_image_info()]
+    except Exception:
+        pass
+    return rects
+
+
+def _on_dark(bbox, backgrounds) -> bool:
+    x0, y0, x1, y1 = bbox
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    return any(r.x0 <= cx <= r.x1 and r.y0 <= cy <= r.y1 for r in backgrounds)
+
+
 def _char_in_hidden(char: dict, hidden_chars) -> bool:
     c = char.get("c", "")
     x0, y0, x1, y1 = char["bbox"]
@@ -174,6 +304,7 @@ def extract_pdf(path: Path) -> Extracted:
         hidden: list[str] = []
         for page in doc:
             hidden_chars = _trace_hidden_chars(page)
+            backgrounds = _dark_backgrounds(page)
             rect = page.rect
             for block in page.get_text("rawdict").get("blocks", []):
                 if block.get("type", 0) != 0:
@@ -188,7 +319,8 @@ def extract_pdf(path: Path) -> Extracted:
                             vis_spans.append(text)
                             continue
                         if (
-                            _rgb_near_white(span.get("color", 0))
+                            (_rgb_near_white(span.get("color", 0))
+                             and not _on_dark(span["bbox"], backgrounds))
                             or span.get("size", 12) < 4
                             or not fitz.Rect(span["bbox"]).intersects(rect)
                         ):
