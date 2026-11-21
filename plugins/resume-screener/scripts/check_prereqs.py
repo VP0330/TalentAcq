@@ -19,6 +19,7 @@ from common import RESUME_EXTS  # noqa: E402,F401
 
 REQUIREMENTS = Path(__file__).resolve().parent / "requirements.txt"
 
+
 def _word_registered() -> bool:
     """True if the Word.Application COM ProgID is registered (no process started)."""
     try:
@@ -117,8 +118,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps([{"name": "Resume folder", "ok": False, "detail": msg,
                                "fix": "Pass an existing folder with --folder.", "required": True}], indent=2))
         else:
-            print(f"MISSING: Resume folder - {msg}
-  Fix: Pass an existing folder with --folder.")
+            print(f"MISSING: Resume folder - {msg}")
+            print("  Fix: Pass an existing folder with --folder.")
         return 1
 
     checks = check_all(args.folder)
