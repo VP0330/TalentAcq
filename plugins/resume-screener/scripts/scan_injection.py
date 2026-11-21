@@ -19,13 +19,13 @@ INJECTION_PATTERNS: list[re.Pattern] = [
     for p in (
         r"ignore\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions|prompts?|rules)",
         r"disregard\s+(all\s+)?(previous|prior|above)",
-        r"\byou\s+are\s+(now\s+)?(an?\s+)?(ai|assistant|language model|chatbot|llm)\b",
-        r"\bsystem\s+prompt\b",
-        r"\b(rate|score|rank|mark|classify)\s+(this|me|the)\s+(candidate|applicant|resume)\b",
-        r"\b(strong|perfect|best)\s+(match|fit|candidate)\b.*\b(rate|label|mark|output|respond)\b",
-        r"\bas\s+an\s+ai\b",
-        r"\b(note|message|instruction)s?\s+to\s+(the\s+)?(ai|assistant|screener|recruit\w*\s+bot|model)\b",
-        r"\b(read|open|include|fetch)\b.*\b(file|url|link|http)\b.*\b(and|then)\b",
+        r"\byou\s+are\s+(now\s+)?(an?\s+)?(ai|language model|chatbot|llm|ai assistant)\b",
+        r"\b(ignore|reveal|override|print|show|new|your|the)\s+system\s+prompt\b",
+        r"\b(rate|score|rank|mark|classify)\s+(this|me)\s+(candidate|applicant|resume)\b",
+        r"\b(rate|score|rank|mark|classify|label)\s+(this|me|this candidate|the candidate|the applicant)\s+(as\s+)?(an?\s+)?(strong|perfect|top|best|excellent)\s+(match|fit|candidate)\b",
+        r"\bas\s+an\s+ai\b",
+        r"\b(note|message|instruction)s?\s+to\s+(the\s+)?(ai|assistant|screener|recruit\w*\s+bot|model)\b",
+        r"\b(ai|assistant|model|llm|screener|chatgpt|gpt|claude)\b.*\b(read|open|include|fetch|visit)\b.*\b(file|url|link|http)",
     )
 ]
 
@@ -38,6 +38,7 @@ MARKUP_PATTERNS: list[re.Pattern] = [
 
 KEYWORD_RUN_MIN = 50
 _MAX_TEXT = 200
+_WRAP_MAX = 300
 _SPLIT = re.compile(r"[,|•;]")
 
 
@@ -50,6 +51,17 @@ class Flag:
 def _trunc(s: str) -> str:
     s = s.strip()
     return s if len(s) <= _MAX_TEXT else s[:_MAX_TEXT]
+
+
+def _span_flags(text: str) -> list[Flag]:
+    """Pattern matches in a multi-line normalised string, as snippet flags."""
+    flags: list[Flag] = []
+    for kind, pats in (("injection_phrase", INJECTION_PATTERNS), ("markup_token", MARKUP_PATTERNS)):
+        for p in pats:
+            for m in p.finditer(text):
+                if len(m.group(0)) <= _WRAP_MAX:
+                    flags.append(Flag(kind, _trunc(m.group(0))))
+    return flags
 
 
 def _pattern_flags(line: str) -> list[Flag]:
@@ -70,12 +82,24 @@ def scan_text(visible: str, hidden: list[str]) -> list[Flag]:
         items = [x for x in _SPLIT.split(line) if x.strip()]
         if len(items) >= KEYWORD_RUN_MIN:
             flags.append(Flag("keyword_run", _trunc(line)))
+    # Catch injections split across a line wrap.
+    lines = [" ".join(x.split()) for x in visible.splitlines() if x.strip()]
+    joined = " ".join(lines)
+    for f in _span_flags(joined):
+        if not any(f.text in ln for ln in lines):
+            flags.append(f)
     for entry in hidden:
         if not entry.strip():
             continue
         flags.extend(_pattern_flags(entry))
         flags.append(Flag("hidden_text", _trunc(entry)))
-    return flags
+    seen: set = set()
+    unique: list[Flag] = []
+    for f in flags:
+        if (f.kind, f.text) not in seen:
+            seen.add((f.kind, f.text))
+            unique.append(f)
+    return unique
 
 
 def is_flagged(flags: list[Flag]) -> bool:
