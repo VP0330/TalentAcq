@@ -173,12 +173,12 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(
             meta["allowed-tools"], "Bash(python:*), Read, Write, Glob, Agent, AskUserQuestion"
         )
-        for s in ("check_prereqs.py", "extract_text.py", "scan_injection.py",
-                  "guard_reviewer.py", "build_summary.py"):
+        for s in ("check_prereqs.py", "extract_text.py", "scan_injection.py", "jd_flags.py",
+                  "plan_run.py", "guard_reviewer.py", "build_summary.py"):
             self.assertIn(s, self._scripts(SCREEN))
         self.assertIn("resume-reviewer", body)
-        # Manual-review stubs are written before the lock; the lock is always cleared.
-        self.assertLess(body.index(MANUAL_REVIEW_MARKER), body.index("--set-lock"))
+        # Manual-review stubs are written (by plan_run.py) before the lock; the lock is always cleared.
+        self.assertLess(body.index("plan_run.py"), body.index("--set-lock"))
         self.assertLess(body.index("--set-lock"), body.rindex("--clear-lock"))
         self.assertIn("/resume-screener:setup", body)
         self.assertIn("_flags_summary.json", body)
@@ -207,13 +207,26 @@ class ScanJsonExposureTests(unittest.TestCase):
         start = body.index("Assess one resume.")
         block = body[start:body.index("```", start)]
         self.assertNotIn("_scan.json", block)
-        self.assertIn("Scan flags:", block)
+        self.assertIn("Task file:", block)
         self.assertIn("_flags_summary.json", read(SCREEN))
-        # The reviewer-plan one-liner reads the sanitized summary, not _scan.json.
-        plan = [ln for ln in body.splitlines() if ln.startswith('python -c "import json,os,sys')]
-        self.assertEqual(len(plan), 1)
-        self.assertIn("_flags_summary.json", plan[0])
-        self.assertNotIn("_scan.json", plan[0])
+
+    def test_screen_has_no_inline_python(self):
+        """F4: resume-derived logic lives in scripts, not python -c one-liners."""
+        self.assertNotIn("python -c", read(SCREEN))
+        self.assertNotIn("_scan.json", read(ROOT / "scripts" / "plan_run.py").split('"""')[2])
+
+    def test_reviewer_reply_is_done_only(self):
+        """F4: reviewer replies carry no free text; screen.md does not echo them."""
+        body = read(AGENT)
+        self.assertIn("`DONE`", body)
+        self.assertIn("`DONE flagged`", body)
+        self.assertNotIn("| <fit label> |", body)
+        screen = read(SCREEN)
+        self.assertIn("`DONE`", screen)
+        self.assertNotIn("| <fit label> |", screen)
+
+    def test_agent_reads_task_file(self):
+        self.assertIn("Task file", read(AGENT))
 
     def test_agent_forbids_stubs(self):
         body = read(AGENT)

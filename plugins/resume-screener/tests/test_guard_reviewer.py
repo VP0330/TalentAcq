@@ -45,6 +45,7 @@ class GuardTests(unittest.TestCase):
     def test_reviewer_can_read_own_text_and_requirements(self):
         self.assertEqual(self.call("Read", self.ass / ".text" / "a.pdf.txt"), "allow")
         self.assertEqual(self.call("Read", self.ass / "_requirements.md"), "allow")
+        self.assertEqual(self.call("Read", self.ass / ".text" / "_tasks" / "1.txt"), "allow")
         self.assertEqual(self.call("Read", self.root / "skills" / "x" / "SKILL.md"), "allow")
 
     def test_reviewer_cannot_read_hidden_or_outside(self):
