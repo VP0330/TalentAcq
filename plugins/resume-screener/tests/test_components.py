@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from assessment import compute_fit, parse_assessment  # noqa: E402
 from common import (  # noqa: E402
     AI_FLAG_COMMENT,
+    BANNED_WORDS,
     FIT_LABELS,
     MANUAL_REVIEW_MARKER,
     REQUIRED_SECTIONS,
@@ -132,6 +133,16 @@ class SkillTests(unittest.TestCase):
                 self.assertIn(heading, a.sections)
         self.assertTrue(any(AI_FLAG_COMMENT in b for b in full))
 
+    def test_template_guidance_never_shares_example_lines(self):
+        for block in fenced_blocks(read(TEMPLATE)):
+            for line in block.splitlines():
+                self.assertFalse(line.lstrip("- ").startswith("["), f"guidance inside example: {line}")
+
+    def test_template_says_requirements_avoid_banned_words(self):
+        text = read(TEMPLATE)
+        for w in BANNED_WORDS:
+            self.assertIn(w, text)
+
     def test_fit_labels_doc(self):
         text = read(FIT_DOC)
         for label in FIT_LABELS:
@@ -170,6 +181,43 @@ class CommandTests(unittest.TestCase):
         self.assertLess(body.index(MANUAL_REVIEW_MARKER), body.index("--set-lock"))
         self.assertLess(body.index("--set-lock"), body.rindex("--clear-lock"))
         self.assertIn("/resume-screener:setup", body)
+        self.assertIn("_flags_summary.json", body)
+        self.assertIn('"warnings"', body)
+        self.assertIn("Do not `cd`", body)
+        self.assertIn("rename and re-run", body)
+        # Step 5 rephrases requirements containing any banned substring.
+        for w in BANNED_WORDS:
+            self.assertIn(w, body)
+
+
+class ScanJsonExposureTests(unittest.TestCase):
+    """Reviewers never read _scan.json; they get only flag kinds and counts."""
+
+    def test_agent_and_skill_never_mention_scan_json(self):
+        for p in (AGENT, SKILL, FIT_DOC):
+            self.assertNotIn("_scan.json", read(p), p.name)
+
+    def test_template_mentions_scan_json_only_for_the_recruiter(self):
+        for line in read(TEMPLATE).splitlines():
+            if "_scan.json" in line:
+                self.assertIn("recruiter", line)
+
+    def test_reviewer_task_block_in_screen_has_no_scan_json(self):
+        body = read(SCREEN)
+        start = body.index("Assess one resume.")
+        block = body[start:body.index("```", start)]
+        self.assertNotIn("_scan.json", block)
+        self.assertIn("Scan flags:", block)
+        self.assertIn("_flags_summary.json", read(SCREEN))
+        # The reviewer-plan one-liner reads the sanitized summary, not _scan.json.
+        plan = [ln for ln in body.splitlines() if ln.startswith('python -c "import json,os,sys')]
+        self.assertEqual(len(plan), 1)
+        self.assertIn("_flags_summary.json", plan[0])
+        self.assertNotIn("_scan.json", plan[0])
+
+    def test_agent_forbids_stubs(self):
+        body = read(AGENT)
+        self.assertIn("Never write a manual-review stub", body)
 
 
 if __name__ == "__main__":
