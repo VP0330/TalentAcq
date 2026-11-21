@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -27,6 +28,10 @@ class GuardTests(unittest.TestCase):
         self.ass = self.role / "assessments"
         (self.ass / ".text").mkdir(parents=True)
         self.lock = {"role_folder": str(self.role), "assessments_dir": str(self.ass)}
+        # Path rules only here; content checks are covered by ContentGuardTests.
+        patcher = mock.patch.object(g, "_content_errors", return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def call(self, tool, path, **extra):
         inp = {"tool_name": tool, "tool_input": {"file_path": str(path)}, "cwd": str(self.cwd)}
@@ -157,6 +162,122 @@ class GuardTests(unittest.TestCase):
                            capture_output=True, text=True, encoding="utf-8", cwd=str(self.cwd))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIsNone(g.load_lock(self.cwd))
+
+
+GOOD_MD = (
+    "# Candidate: a.pdf\nFit: Strong match\nRequirements met: 1/1 must-haves shown\n\n"
+    "## Requirements\n| # | Requirement (from JD) | Type | Status | Evidence from resume |\n"
+    "|---|---|---|---|---|\n| 1 | R | must | Shown | \"Sold software daily\" |\n\n"
+    "## Experience overview\nx\n\n## Strengths\n- a\n\n## Gaps\n- b\n\n"
+    "## Suggested screen questions\n- q\n"
+)
+RESUME = "I Sold software daily for years"
+
+
+class ContentGuardTests(unittest.TestCase):
+    """F3a: reviewer Write/Edit content is checked before it reaches disk."""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.tmp = Path(self._td.name).resolve()
+        self.root = self.tmp / "plugin"
+        (self.root / "skills").mkdir(parents=True)
+        self.role = self.tmp / "role"
+        self.ass = self.role / "assessments"
+        (self.ass / ".text").mkdir(parents=True)
+        (self.ass / ".text" / "a.pdf.txt").write_text(RESUME, encoding="utf-8")
+        (self.ass / ".text" / "_extract.json").write_text(
+            json.dumps({"files": {"a.pdf": {"status": "ok"}}}), encoding="utf-8")
+        self.lock = {"role_folder": str(self.role), "assessments_dir": str(self.ass)}
+
+    def write(self, content):
+        hi = {"tool_name": "Write", "agent_type": "resume-screener:resume-reviewer", "cwd": str(self.tmp),
+              "tool_input": {"file_path": str(self.ass / "a.pdf.md"), "content": content}}
+        return g.decide(hi, self.lock, self.root)
+
+    def edit(self, old, new, replace_all=False):
+        ti = {"file_path": str(self.ass / "a.pdf.md"), "old_string": old, "new_string": new}
+        if replace_all:
+            ti["replace_all"] = True
+        hi = {"tool_name": "Edit", "agent_type": "resume-screener:resume-reviewer", "cwd": str(self.tmp),
+              "tool_input": ti}
+        return g.decide(hi, self.lock, self.root)
+
+    def test_valid_write_allowed(self):
+        self.assertEqual(self.write(GOOD_MD), ("allow", ""))
+
+    def test_write_with_link_denied(self):
+        d, reason = self.write(GOOD_MD.replace("- a", "- see [site](http://x.example)"))
+        self.assertEqual(d, "deny")
+        self.assertIn("links are not allowed", reason)
+
+    def test_write_with_banned_word_denied(self):
+        d, reason = self.write(GOOD_MD.replace("- b", "- reject this one"))
+        self.assertEqual(d, "deny")
+        self.assertIn("Banned wording", reason)
+
+    def test_write_failing_full_validation_denied(self):
+        d, reason = self.write(GOOD_MD.replace("Fit: Strong match", "Fit: Weak match"))
+        self.assertEqual(d, "deny")
+        self.assertIn("Fit", reason)
+
+    def test_edit_introducing_html_denied(self):
+        (self.ass / "a.pdf.md").write_text(GOOD_MD, encoding="utf-8")
+        d, reason = self.edit("- a", "- <script>x</script>")
+        self.assertEqual(d, "deny")
+        self.assertIn("HTML", reason)
+
+    def test_edit_with_verified_banned_quote_in_evidence_allowed(self):
+        (self.ass / ".text" / "a.pdf.txt").write_text(RESUME + "\nReduced claim rejection rate", encoding="utf-8")
+        (self.ass / "a.pdf.md").write_text(GOOD_MD, encoding="utf-8")
+        d, _ = self.edit('"Sold software daily"', '"Reduced claim rejection rate"')
+        self.assertEqual(d, "allow")
+
+    def test_edit_fragment_scrubbed_when_file_missing(self):
+        d, _ = self.edit("x", "![img](http://x)")
+        self.assertEqual(d, "deny")
+
+
+class NoLockReviewerTests(unittest.TestCase):
+    """F6: a reviewer with no lock in place is denied file access."""
+
+    def test_reviewer_denied_without_lock(self):
+        for tool in ("Read", "Write", "Edit"):
+            hi = {"tool_name": tool, "agent_type": "resume-screener:resume-reviewer",
+                  "tool_input": {"file_path": "C:/x/a.md"}}
+            d, reason = g.decide(hi, None, Path("."))
+            self.assertEqual(d, "deny", tool)
+            self.assertIn("lock", reason)
+
+    def test_non_reviewer_and_untyped_allowed_without_lock(self):
+        hi = {"tool_name": "Read", "tool_input": {"file_path": "C:/x"}}
+        self.assertEqual(g.decide(hi, None, Path("."))[0], "allow")
+        hi["agent_type"] = "general-purpose"
+        self.assertEqual(g.decide(hi, None, Path("."))[0], "allow")
+
+    def test_lock_found_under_project_dir_env(self):
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as other:
+            role = Path(proj) / "role"
+            (role / "assessments" / ".text").mkdir(parents=True)
+            g.set_lock(Path(proj), role)
+            payload = {"tool_name": "Read", "agent_type": "resume-screener:resume-reviewer",
+                       "tool_input": {"file_path": str(role / "a.pdf")}, "cwd": other}
+            r = subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(payload),
+                               capture_output=True, text=True, encoding="utf-8", cwd=other,
+                               env={**os.environ, "CLAUDE_PROJECT_DIR": proj})
+            out = json.loads(r.stdout)["hookSpecificOutput"]
+            self.assertEqual(out["permissionDecision"], "deny")
+            self.assertIn("may not access", out["permissionDecisionReason"])
+
+    def test_hook_denies_reviewer_without_lock(self):
+        with tempfile.TemporaryDirectory() as d:
+            payload = {"tool_name": "Read", "agent_type": "resume-screener:resume-reviewer",
+                       "tool_input": {"file_path": "C:/x"}, "cwd": d}
+            env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
+            r = subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(payload),
+                               capture_output=True, text=True, encoding="utf-8", cwd=d, env=env)
+            self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
 if __name__ == "__main__":

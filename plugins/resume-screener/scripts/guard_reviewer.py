@@ -2,7 +2,9 @@
 
 Hook mode (no args): read the hook JSON from stdin; print a deny decision or nothing.
 CLI mode: ``--set-lock <role_folder>`` / ``--clear-lock`` manage the run lock file.
-With no lock file the hook allows everything.
+With no lock file the hook allows everything except resume-reviewer file access.
+Reviewer Write/Edit content is checked (links, images, HTML, banned wording; full
+assessment checks for Write) and denied before it reaches disk.
 """
 from __future__ import annotations
 
@@ -54,6 +56,33 @@ def load_lock(cwd: Path) -> dict | None:
     return None
 
 
+def lock_dirs(cwd: Path) -> list:
+    """Where to look for the lock: CLAUDE_PROJECT_DIR (if set) first, then cwd."""
+    dirs = []
+    proj = os.environ.get("CLAUDE_PROJECT_DIR")
+    if proj:
+        dirs.append(Path(proj))
+    dirs.append(Path(cwd))
+    return dirs
+
+
+def find_lock(cwd: Path) -> tuple:
+    """(lock dict or None, True if a lock file exists anywhere we looked)."""
+    present = False
+    for d in lock_dirs(cwd):
+        if (d / LOCK_REL).exists():
+            present = True
+            lock = load_lock(d)
+            if lock is not None:
+                return lock, True
+    return None, present
+
+
+def is_typed_reviewer(hook_input: dict) -> bool:
+    """True only when agent_type is present and names the resume-reviewer agent."""
+    return "agent_type" in hook_input and str(hook_input["agent_type"] or "").endswith("resume-reviewer")
+
+
 def is_reviewer(hook_input: dict) -> bool:
     if "agent_type" in hook_input:
         return str(hook_input["agent_type"] or "").endswith("resume-reviewer")
@@ -64,10 +93,37 @@ def _deny(path: str, rule: str) -> tuple[str, str]:
     return ("deny", f"resume-reviewer may not access '{path}': {rule}")
 
 
+def _content_errors(tool: str, tool_input: dict, real: Path, assessments: Path) -> list:
+    """Errors in the content a reviewer Write/Edit would put on disk."""
+    from assessment import check_assessment, scrub
+    from common import resume_name_from_assessment
+
+    if tool == "Write":
+        content = tool_input.get("content")
+        content = content if isinstance(content, str) else ""
+        return check_assessment(assessments, resume_name_from_assessment(real), content)
+    old, new = tool_input.get("old_string"), tool_input.get("new_string")
+    new = new if isinstance(new, str) else ""
+    try:
+        current = real.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        current = None
+    if current is None or not isinstance(old, str) or not old or old not in current:
+        return scrub(new)
+    result = current.replace(old, new) if tool_input.get("replace_all") else current.replace(old, new, 1)
+    before = scrub(current)
+    return [e for e in scrub(result) if e not in before]
+
+
 def decide(hook_input: dict, lock: dict | None, plugin_root: Path) -> tuple[str, str]:
-    if not lock or not is_reviewer(hook_input):
-        return ("allow", "")
     tool = hook_input.get("tool_name")
+    if not lock:
+        if tool in GUARDED_TOOLS and is_typed_reviewer(hook_input):
+            return ("deny", "resume-reviewer file access is only allowed during a screening run "
+                            "(no resume-screener lock found)")
+        return ("allow", "")
+    if not is_reviewer(hook_input):
+        return ("allow", "")
     if tool not in GUARDED_TOOLS:
         return ("allow", "")
 
@@ -104,6 +160,9 @@ def decide(hook_input: dict, lock: dict | None, plugin_root: Path) -> tuple[str,
     # Write / Edit
     in_dir = Path(norm_path(target.parent)) == Path(norm_path(assessments))
     if in_dir and target.suffix == ".md" and not target.name.startswith("_"):
+        errors = _content_errors(tool, tool_input, Path(os.path.realpath(p)), assessments)
+        if errors:
+            return ("deny", "Assessment content check failed (nothing was written):\n- " + "\n- ".join(errors))
         return ("allow", "")
     return _deny(
         raw,
@@ -129,16 +188,15 @@ def _hook_main() -> int:
             raise ValueError("hook input is not an object")
     except Exception:
         # Unparseable input: fail closed only while a screening lock exists.
-        if (Path(os.getcwd()) / LOCK_REL).exists():
+        if any((d / LOCK_REL).exists() for d in lock_dirs(Path(os.getcwd()))):
             _emit_deny("resume-screener guard could not parse hook input during a screening run")
         return 0
 
     cwd = Path(hook_input.get("cwd") or os.getcwd())
-    lock = load_lock(cwd)
-    if lock is None:
-        if (cwd / LOCK_REL).exists():  # lock present but corrupt: fail closed
-            if hook_input.get("tool_name") in GUARDED_TOOLS and is_reviewer(hook_input):
-                _emit_deny("resume-screener lock file is unreadable; refusing file access")
+    lock, present = find_lock(cwd)
+    if lock is None and present:  # lock present but corrupt: fail closed
+        if hook_input.get("tool_name") in GUARDED_TOOLS and is_reviewer(hook_input):
+            _emit_deny("resume-screener lock file is unreadable; refusing file access")
         return 0
     try:
         decision, reason = decide(hook_input, lock, plugin_root)
