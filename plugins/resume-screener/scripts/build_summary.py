@@ -28,25 +28,34 @@ _SCRUB_CHARS = re.compile(r"[\[\]()<>]")
 def _clean(s: str, limit: int) -> str:
     """Make resume-derived text safe for a markdown table cell."""
     s = _SCRUB_CHARS.sub("", s)
+    s = re.sub(r"[a-zA-Z][a-zA-Z0-9+.-]*://", "", s)
     s = s.replace("|", "/").replace("`", "'")
     s = re.sub(r"\s+", " ", s).strip()
     return s[:limit]
 
 
 def _load_json(path: Path):
+    """Return a dict, or None if the file is missing or unreadable."""
     if not path.is_file():
-        return {}
+        return None
     try:
         data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except ValueError:
-        return {}
-    return data if isinstance(data, dict) else {}
+    except (ValueError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def build_summary(assessments_dir: Path, today: date) -> tuple[str, dict]:
     assessments_dir = Path(assessments_dir)
+    warnings = []
     manifest = _load_json(text_dir(assessments_dir) / "_extract.json")
+    if manifest is None:
+        manifest = {}
+        warnings.append("⚠ Extraction manifest missing or unreadable — this summary may not list every resume.")
     scan = _load_json(text_dir(assessments_dir) / "_scan.json")
+    if scan is None:
+        scan = {}
+        warnings.append("⚠ Injection scan results missing or unreadable — flag checks could not run.")
     files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
     jd_name = _clean(str(manifest.get("jd") or "unknown JD"), 120)
 
@@ -61,29 +70,34 @@ def build_summary(assessments_dir: Path, today: date) -> tuple[str, dict]:
             continue
         name = resume_name_from_assessment(md_path)
         seen.add(name)
-        md = md_path.read_text(encoding="utf-8", errors="replace")
-        a = parse_assessment(md)
-        if a.manual_review:
-            manual[name] = "reviewer marked this resume for manual review"
+        try:
+            md = md_path.read_text(encoding="utf-8", errors="replace")
+            a = parse_assessment(md)
+            if a.manual_review:
+                manual[name] = "reviewer marked this resume for manual review"
+                continue
+            tp = text_path_for(assessments_dir, name)
+            resume_text = tp.read_text(encoding="utf-8", errors="replace") if tp.is_file() else None
+            scan_entry = scan.get(name) if isinstance(scan.get(name), dict) else None
+            errors = validate(md, resume_text, scan_entry)
+            if errors:
+                failed[name] = _clean(errors[0], 200)
+                continue
+            shown = sum(1 for r in a.rows if r.type == "must" and r.status == STATUSES[0])
+            total = sum(1 for r in a.rows if r.type == "must")
+            strength = _clean(a.strengths[0], 80) if a.strengths else ""
+            gap = _clean(a.gaps[0], 80) if a.gaps else ""
+            row = "| {} | {} | {}/{} | {} | {} | {} |".format(
+                _clean(name, 120), a.fit_label, shown, total,
+                "AI-augmented" if a.ai_augmented else "", strength, gap,
+            )
+            key = (FIT_LABELS.index(a.fit_label), -shown, name.lower())
+        except Exception as exc:  # one bad file must not abort the run
+            failed[name] = _clean(f"could not process assessment: {type(exc).__name__}: {exc}", 200)
             continue
-        tp = text_path_for(assessments_dir, name)
-        resume_text = tp.read_text(encoding="utf-8", errors="replace") if tp.is_file() else None
-        scan_entry = scan.get(name) if isinstance(scan.get(name), dict) else None
-        errors = validate(md, resume_text, scan_entry)
-        if errors:
-            failed[name] = _clean(errors[0], 200)
-            continue
-        shown = sum(1 for r in a.rows if r.type == "must" and r.status == STATUSES[0])
-        total = sum(1 for r in a.rows if r.type == "must")
         if a.ai_augmented:
             ai_count += 1
-        strength = _clean(a.strengths[0], 80) if a.strengths else ""
-        gap = _clean(a.gaps[0], 80) if a.gaps else ""
-        row = "| {} | {} | {}/{} | {} | {} | {} |".format(
-            _clean(name, 120), a.fit_label, shown, total,
-            "AI-augmented" if a.ai_augmented else "", strength, gap,
-        )
-        table.append(((FIT_LABELS.index(a.fit_label), -shown, name.lower()), row))
+        table.append((key, row))
 
     # Manifest entries: unreadable files and resumes with no assessment.
     for name, info in files.items():
@@ -97,7 +111,8 @@ def build_summary(assessments_dir: Path, today: date) -> tuple[str, dict]:
             manual[name] = "no assessment produced"
 
     table.sort(key=lambda t: t[0])
-    lines = [
+    lines = [w for w in warnings for w in (w, "")]
+    lines += [
         f"# Screening summary — {jd_name} — {today.isoformat()}",
         "",
         "This table is a reading aid for the recruiter, not a decision.",
@@ -123,6 +138,7 @@ def build_summary(assessments_dir: Path, today: date) -> tuple[str, dict]:
         "ai_augmented": ai_count,
         "manual_review": sorted(manual, key=str.lower),
         "failed_checks": sorted(failed, key=str.lower),
+        "warnings": warnings,
     }
     return "\n".join(lines), counts
 

@@ -140,5 +140,43 @@ class BuildSummaryTests(unittest.TestCase):
             self.assertNotIn(ch, strength)
 
 
+    def test_tiebreakers_shown_then_name(self):
+        self.add("p_hi.pdf", make_md("Possible match", [("must", SHOWN, EV)] * 2 + [("must", NOT, "—")]))
+        self.add("p_lo.pdf", make_md("Possible match", [("must", SHOWN, EV)] + [("must", NOT, "—")]))
+        self.add("q_b.pdf", make_md("Possible match", [("must", SHOWN, EV)] + [("must", NOT, "—")]))
+        self.add("q_a.pdf", make_md("Possible match", [("must", SHOWN, EV)] + [("must", NOT, "—")]))
+        md, _ = self.finish()
+        order = [l.split("|")[1].strip() for l in md.splitlines() if l.startswith("| ") and ".pdf" in l]
+        self.assertEqual(order, ["p_hi.pdf", "p_lo.pdf", "q_a.pdf", "q_b.pdf"])
+
+    def test_missing_manifest_and_scan_warn(self):
+        self.add("a.pdf", make_md("Strong match", rows_for(1, 1)))
+        md, counts = build_summary(self.dir, TODAY)
+        self.assertIn("Extraction manifest missing or unreadable", md.splitlines()[0])
+        self.assertEqual(len(counts["warnings"]), 2)
+        (self.dir / ".text" / "_extract.json").write_text("{not json", encoding="utf-8")
+        md, counts = build_summary(self.dir, TODAY)
+        self.assertTrue(any("manifest" in w for w in counts["warnings"]))
+
+    def test_no_warnings_when_inputs_present(self):
+        self.add("a.pdf", make_md("Strong match", rows_for(1, 1)))
+        (self.dir / ".text" / "_scan.json").write_text("{}", encoding="utf-8")
+        _, counts = self.finish()
+        self.assertEqual(counts["warnings"], [])
+
+    def test_garbage_file_isolated(self):
+        self.add("ok.pdf", make_md("Strong match", rows_for(1, 1)))
+        (self.dir / "junk.pdf.md").write_bytes(bytes(range(256)) * 4)
+        (self.dir / "empty.pdf.md").write_text("", encoding="utf-8")
+        md, counts = self.finish()
+        self.assertEqual(counts["assessed"], 1)
+        self.assertEqual(sorted(counts["failed_checks"]), ["empty.pdf", "junk.pdf"])
+
+    def test_bare_urls_neutralised(self):
+        self.add("a.pdf", make_md("Strong match", rows_for(1, 1), strength="See https://evil.example/x now"))
+        md, _ = self.finish()
+        self.assertNotIn("://", md)
+
+
 if __name__ == "__main__":
     unittest.main()
