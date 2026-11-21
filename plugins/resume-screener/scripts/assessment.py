@@ -1,6 +1,8 @@
 """Parse and validate reviewer assessments (output guards O1, O2, O3)."""
 from __future__ import annotations
 
+import json
+import os
 import re
 import sys
 import unicodedata
@@ -17,6 +19,8 @@ from common import (  # noqa: E402
     MANUAL_REVIEW_MARKER,
     REQUIRED_SECTIONS,
     STATUSES,
+    text_dir,
+    text_path_for,
 )
 
 SCREENING_FLAGS_HEADING = "## Screening flags"
@@ -152,18 +156,80 @@ def normalise(s: str) -> str:
     return s.strip().lower()
 
 
+MIN_QUOTE_PART = 12  # a quote needs at least one fragment this long (normalised)
+
+
 def quote_found(quote: str, resume_text: str) -> bool:
+    """True if every fragment of ``quote`` (split on … or ...) is in the resume text
+    and at least one fragment has MIN_QUOTE_PART or more normalised characters."""
     haystack = normalise(resume_text)
-    parts = re.split(r"…|\.\.\.", quote)
-    for part in parts:
-        p = normalise(part)
+    parts = [normalise(part) for part in re.split(r"…|\.\.\.", quote)]
+    if not any(len(p) >= MIN_QUOTE_PART for p in parts):
+        return False
+    for p in parts:
         if len(p) >= 3 and p not in haystack:
             return False
     return True
 
 
+_REQ_LINE_RE = re.compile(r"^\s*(\d+)\.\s*\[(must|nice)\]\s*(.+?)\s*$", re.IGNORECASE)
+
+
+def parse_requirements(md: str) -> list:
+    """Parse ``_requirements.md`` lines ``N. [must|nice] text`` into (num, type, text)."""
+    out = []
+    for line in md.splitlines():
+        m = _REQ_LINE_RE.match(line)
+        if m:
+            out.append((int(m.group(1)), m.group(2).lower(), m.group(3)))
+    return out
+
+
+def _req_norm(s: str) -> str:
+    return normalise(s.replace("|", "/").replace("*", "").replace("_", ""))
+
+
+def _check_requirements(rows: list, requirements: list) -> list:
+    errors = []
+    if len(rows) != len(requirements):
+        errors.append(
+            f"The requirements table has {len(rows)} rows but _requirements.md has "
+            f"{len(requirements)} requirements. Use one row per requirement, in order."
+        )
+    for i, (row, (num, rtype, text)) in enumerate(zip(rows, requirements), 1):
+        if row.num != num:
+            errors.append(
+                f"Row {row.num}: table row {i} is numbered {row.num} but requirement {i} in "
+                f"_requirements.md is number {num}."
+            )
+        if row.type != rtype:
+            errors.append(f"Row {row.num}: type '{row.type}' does not match _requirements.md ('{rtype}').")
+        if _req_norm(row.requirement) != _req_norm(text):
+            errors.append(
+                f"Row {row.num}: requirement text does not match _requirements.md item {num} "
+                f"('{text}'). Copy it exactly."
+            )
+    return errors
+
+
+def _section_texts(md: str, headings: tuple) -> dict:
+    """Body text of each ``## `` section named in ``headings``."""
+    out: dict = {h: [] for h in headings}
+    section = None
+    for line in md.splitlines():
+        if line.startswith("## "):
+            section = line.strip()
+        elif section in out:
+            out[section].append(line)
+    return {h: "\n".join(lines) for h, lines in out.items()}
+
+
+_QUOTED_PROSE_SECTIONS = ("## Experience overview", "## Strengths")
+
+
 def _banned_scan_text(md: str) -> str:
-    """md with quoted strings in the Evidence column removed (verbatim resume words)."""
+    """md with quoted strings removed only from the Evidence column of Shown /
+    Partly shown rows (verbatim resume words that the validator verifies)."""
     out = []
     section = None
     for line in md.splitlines():
@@ -171,7 +237,7 @@ def _banned_scan_text(md: str) -> str:
             section = line.strip()
         elif section == "## Requirements" and line.strip().startswith("|"):
             parts = _PIPE_RE.split(line)
-            if len(parts) > 5:
+            if len(parts) > 5 and _plain(parts[4].replace("\\|", "|")) in STATUSES[:2]:
                 tail = "|".join(parts[5:])
                 tail = _QUOTE_RE.sub("", tail)
                 line = "|".join(parts[:5]) + "|" + tail
@@ -201,7 +267,14 @@ def _scrub(md: str) -> list:
     return errors
 
 
-def validate(md: str, resume_text, scan_entry) -> list:
+scrub = _scrub  # public name: links, images, HTML and banned wording checks only
+
+
+def validate(md: str, resume_text, scan_entry, requirements: Optional[list] = None) -> list:
+    """All output-guard errors for one assessment (empty list = passes).
+
+    ``requirements``: parsed ``_requirements.md`` as (num, type, text); None skips that check.
+    """
     errors = _scrub(md)
     a = parse_assessment(md)
     if a.manual_review:
@@ -221,6 +294,8 @@ def validate(md: str, resume_text, scan_entry) -> list:
             errors.append(f"Row {r.num}: status '{r.status}' must be one of: {', '.join(STATUSES)}.")
         if r.type not in ("must", "nice"):
             errors.append(f"Row {r.num}: type '{r.type}' must be 'must' or 'nice'.")
+    if requirements is not None:
+        errors.extend(_check_requirements(a.rows, requirements))
 
     # O1: fit label recomputed from the table
     expected = compute_fit(a.rows)
@@ -250,7 +325,16 @@ def validate(md: str, resume_text, scan_entry) -> list:
             for q in quotes:
                 if not quote_found(q, resume_text):
                     errors.append(
-                        f'Quote not found in resume text: "{q}". Use an exact quote or change the status.'
+                        f'Quote not found in resume text: "{q}". Use an exact quote of at least '
+                        f"{MIN_QUOTE_PART} characters or change the status."
+                    )
+        for heading, body in _section_texts(md, _QUOTED_PROSE_SECTIONS).items():
+            for q in extract_quotes(body):
+                if not quote_found(q, resume_text):
+                    errors.append(
+                        f'{heading[3:]}: quote not found in resume text: "{q}". Text in quotation '
+                        f"marks must be an exact resume quote of at least {MIN_QUOTE_PART} "
+                        "characters; fix it or remove the quotation marks."
                     )
 
     if scan_entry and scan_entry.get("flagged"):
@@ -258,4 +342,79 @@ def validate(md: str, resume_text, scan_entry) -> list:
             errors.append("This resume was flagged for prompt injection: the Fit line must include the AI-augmented comment.")
         if SCREENING_FLAGS_HEADING not in a.sections:
             errors.append(f"This resume was flagged for prompt injection: add a '{SCREENING_FLAGS_HEADING}' section.")
+    return errors
+
+
+# ------------------------------------------------------------ per-file checks
+
+SCAN_UNREADABLE = "Scan record unreadable — flag check could not run."
+STUB_NOT_ALLOWED = (
+    "This resume was extracted successfully, so a full assessment is required "
+    "— a manual-review stub is only for files that could not be read."
+)
+
+
+def lookup(d, name: str):
+    """``d[name]``, falling back to a case-insensitive key match (Windows paths)."""
+    if not isinstance(d, dict):
+        return None
+    if name in d:
+        return d[name]
+    key = os.path.normcase(name)
+    for k, v in d.items():
+        if isinstance(k, str) and os.path.normcase(k) == key:
+            return v
+    return None
+
+
+def load_requirements(adir: Path) -> Optional[list]:
+    """Parsed ``<adir>/_requirements.md``, or None if absent or it has no numbered lines."""
+    p = Path(adir) / "_requirements.md"
+    try:
+        reqs = parse_requirements(p.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+    return reqs or None
+
+
+def load_scan_entry(adir: Path, name: str) -> tuple:
+    """(entry or None, error or None). A missing scan file is not an error here."""
+    scan_file = text_dir(Path(adir)) / "_scan.json"
+    if not scan_file.is_file():
+        return None, None
+    try:
+        scan = json.loads(scan_file.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return None, SCAN_UNREADABLE
+    if not isinstance(scan, dict):
+        return None, SCAN_UNREADABLE
+    entry = lookup(scan, name)
+    if entry is not None and not isinstance(entry, dict):
+        return None, SCAN_UNREADABLE
+    return entry, None
+
+
+def extracted_ok(adir: Path, name: str) -> bool:
+    """True only if the extract manifest is readable and lists ``name`` with status ok."""
+    try:
+        manifest = json.loads(
+            (text_dir(Path(adir)) / "_extract.json").read_text(encoding="utf-8", errors="replace")
+        )
+        return lookup(manifest["files"], name)["status"] == "ok"
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def check_assessment(adir: Path, name: str, md: str) -> list:
+    """Every check for the assessment of resume ``name`` in ``adir`` (hook, guard, plan)."""
+    adir = Path(adir)
+    tp = text_path_for(adir, name)
+    resume_text = tp.read_text(encoding="utf-8", errors="replace") if tp.is_file() else None
+    scan_entry, scan_err = load_scan_entry(adir, name)
+    if MANUAL_REVIEW_MARKER in md and extracted_ok(adir, name):
+        errors = [STUB_NOT_ALLOWED]
+    else:
+        errors = validate(md, resume_text, scan_entry, load_requirements(adir))
+    if scan_err:
+        errors.append(scan_err)
     return errors

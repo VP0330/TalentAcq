@@ -11,6 +11,7 @@ from assessment import (  # noqa: E402
     Row,
     compute_fit,
     parse_assessment,
+    parse_requirements,
     quote_found,
     validate,
 )
@@ -205,6 +206,116 @@ class AssessmentTests(unittest.TestCase):
     def test_missing_resume_text(self):
         errs = validate(make_md("Strong match", GOOD_ROWS), None, None)
         self.assertTrue(any("Resume text not found" in e for e in errs), errs)
+
+
+REQS = [(1, "must", "Req 1"), (2, "must", "Req 2")]
+
+
+class RequirementsMatchTests(unittest.TestCase):
+    """F1: the table must reproduce _requirements.md row for row."""
+
+    def test_parse_requirements(self):
+        md = "1. [must] 5+ years B2B sales\n2. [NICE] Salesforce | HubSpot\n\nnoise line\n3.[must]  CRM  \n"
+        self.assertEqual(
+            parse_requirements(md),
+            [(1, "must", "5+ years B2B sales"), (2, "nice", "Salesforce | HubSpot"), (3, "must", "CRM")],
+        )
+
+    def test_matching_table_passes(self):
+        self.assertEqual(validate(make_md("Strong match", GOOD_ROWS), RESUME, None, REQS), [])
+
+    def test_none_skips_check(self):
+        self.assertEqual(validate(make_md("Strong match", GOOD_ROWS), RESUME, None, None), [])
+
+    def test_dropped_row_rejected(self):
+        md = make_md("Strong match", GOOD_ROWS[:1])
+        errs = validate(md, RESUME, None, REQS)
+        self.assertTrue(any("1 rows" in e and "2 requirements" in e for e in errs), errs)
+
+    def test_retyped_row_rejected(self):
+        reqs = [(1, "must", "Req 1"), (2, "nice", "Req 2")]
+        errs = validate(make_md("Strong match", GOOD_ROWS), RESUME, None, reqs)
+        self.assertTrue(any(e.startswith("Row 2:") and "type" in e for e in errs), errs)
+
+    def test_reworded_row_rejected(self):
+        reqs = [(1, "must", "Req 1"), (2, "must", "Req two")]
+        errs = validate(make_md("Strong match", GOOD_ROWS), RESUME, None, reqs)
+        self.assertTrue(any(e.startswith("Row 2:") and "text" in e for e in errs), errs)
+
+    def test_renumbered_row_rejected(self):
+        md = make_md("Strong match", GOOD_ROWS).replace("| 2 | Req 2", "| 5 | Req 2")
+        errs = validate(md, RESUME, None, REQS)
+        self.assertTrue(any("numbered 5" in e for e in errs), errs)
+
+    def test_text_normalisation_tolerated(self):
+        reqs = [(1, "must", "Python | SQL – **cloud**"), (2, "must", "Req 2")]
+        md = make_md("Strong match", GOOD_ROWS).replace("| Req 1 |", "| Python / SQL - cloud |")
+        self.assertEqual(validate(md, RESUME, None, reqs), [])
+
+
+class QuoteSubstanceTests(unittest.TestCase):
+    """F2: a quote needs a part of at least 12 normalised characters."""
+
+    def test_short_or_empty_quotes_not_found(self):
+        for q in (" ", "…", "...", "Excel", "Sales … 2017", "a…b…c"):
+            with self.subTest(q=q):
+                self.assertFalse(quote_found(q, "Jane Doe\nSales Representative 2017-2024\nSkills: Excel"))
+
+    def test_long_part_with_short_tail_found(self):
+        self.assertTrue(quote_found("Sales Representative … Excel", "Sales Representative 2017-2024 Skills: Excel"))
+
+    def test_probe_rows_rejected(self):
+        resume = "Jane Doe\nSales Representative 2017-2024\nSkills: Excel"
+        rows = [("must", SHOWN, '" "'), ("must", SHOWN, '"…"')]
+        errs = validate(make_md("Strong match", rows), resume, None)
+        self.assertGreaterEqual(sum("Quote not found" in e or "needs at least one" in e for e in errs), 2, errs)
+
+
+class QuotesOutsideEvidenceTests(unittest.TestCase):
+    """F9: quotes in Experience overview and Strengths are verified too."""
+
+    def test_fabricated_quote_in_strengths_rejected(self):
+        md = make_md("Strong match", GOOD_ROWS).replace(
+            "- Strong account work", '- Says "led a team of forty people"')
+        errs = validate(md, RESUME, None)
+        self.assertTrue(any("Strengths" in e and "led a team" in e for e in errs), errs)
+
+    def test_fabricated_quote_in_overview_rejected(self):
+        md = make_md("Strong match", GOOD_ROWS).replace(
+            "Eight years in sales.", 'Described as “top performer in the region”.')
+        errs = validate(md, RESUME, None)
+        self.assertTrue(any("Experience overview" in e for e in errs), errs)
+
+    def test_verbatim_quotes_outside_evidence_pass(self):
+        md = make_md("Strong match", GOOD_ROWS).replace(
+            "- Strong account work", '- "Managed key accounts across EMEA"').replace(
+            "Eight years in sales.", 'Held the title "Account Executive, 2018-2023".')
+        self.assertEqual(validate(md, RESUME, None), [])
+
+    def test_gaps_quotes_not_verified(self):
+        md = make_md("Strong match", GOOD_ROWS).replace("- No SaaS experience", '- No "SaaS" mentioned')
+        self.assertEqual(validate(md, RESUME, None), [])
+
+
+class BannedExemptionTests(unittest.TestCase):
+    """F10: only quotes in Evidence of Shown/Partly shown rows are exempt."""
+
+    def test_banned_quote_in_not_shown_row_rejected(self):
+        rows = GOOD_ROWS + [("nice", NOT, '"Not suitable, reject"')]
+        errs = validate(make_md("Strong match", rows), RESUME, None)
+        self.assertTrue(any("Banned wording" in e for e in errs), errs)
+
+    def test_banned_quote_in_strengths_rejected(self):
+        resume = RESUME + "\nReduced claim rejection rate by 20%"
+        md = make_md("Strong match", GOOD_ROWS).replace(
+            "- Strong account work", '- "Reduced claim rejection rate by 20%"')
+        errs = validate(md, resume, None)
+        self.assertTrue(any("Banned wording" in e for e in errs), errs)
+
+    def test_banned_quote_in_partly_shown_evidence_allowed(self):
+        resume = "Reduced claim rejection rate by 20%"
+        rows = [("must", PART, '"reduced claim rejection rate"')]
+        self.assertEqual(validate(make_md("Possible match", rows), resume, None), [])
 
 
 if __name__ == "__main__":
