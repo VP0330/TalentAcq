@@ -19,12 +19,12 @@ INJECTION_PATTERNS: list[re.Pattern] = [
     for p in (
         r"ignore\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions|prompts?|rules)",
         r"disregard\s+(all\s+)?(previous|prior|above)",
-        r"\byou\s+are\s+(now\s+)?(an?\s+)?(ai|language model|chatbot|llm|ai assistant)\b",
-        r"\b(ignore|reveal|override|print|show|new|your|the)\s+system\s+prompt\b",
-        r"\b(rate|score|rank|mark|classify)\s+(this|me)\s+(candidate|applicant|resume)\b",
-        r"\b(rate|score|rank|mark|classify|label)\s+(this|me|this candidate|the candidate|the applicant)\s+(as\s+)?(an?\s+)?(strong|perfect|top|best|excellent)\s+(match|fit|candidate)\b",
-        r"\bas\s+an\s+ai\b",
-        r"\b(note|message|instruction)s?\s+to\s+(the\s+)?(ai|assistant|screener|recruit\w*\s+bot|model)\b",
+        r"\byou\s+are\s+(now\s+)?(an?\s+)?(ai|language model|chatbot|llm|ai assistant)\b",
+        r"\b(ignore|reveal|override|print|show|new|your|the)\s+system\s+prompt\b",
+        r"\b(rate|score|rank|mark|classify)\s+(this|me)\s+(candidate|applicant|resume)\b",
+        r"\b(rate|score|rank|mark|classify|label)\s+(this|me|this candidate|the candidate|the applicant)\s+(as\s+)?(an?\s+)?(strong|perfect|top|best|excellent)\s+(match|fit|candidate)\b",
+        r"\bas\s+an\s+ai\b",
+        r"\b(note|message|instruction)s?\s+to\s+(the\s+)?(ai|assistant|screener|recruit\w*\s+bot|model)\b",
         r"\b(ai|assistant|model|llm|screener|chatgpt|gpt|claude)\b.*\b(read|open|include|fetch|visit)\b.*\b(file|url|link|http)",
     )
 ]
